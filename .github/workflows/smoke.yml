@@ -1,0 +1,113 @@
+name: smoke
+
+# Cross-platform end-to-end smoke test for fetch → bundle → install → config.
+#
+# The matrix covers every target this project claims to support. Each runner's native
+# OS/arch matches its bundle target, so we can launch the installed native binary
+# (rust-analyzer --version) to prove the round-trip actually produces a working LSP,
+# not just a correct-looking file layout.
+#
+# LSP subset (--only pyright,bash,rust) is deliberately tiny but covers the two biggest
+# platform-divergent code paths:
+#   - npm tarball path            (pyright, bash)
+#   - github-release binary path  (rust — .gz single-binary on unix via gunzipToFile,
+#                                       .zip archive on windows via bsdtar; also
+#                                       exercises chmod +x on unix)
+#
+# fetch hits the public network (GitHub releases, npm registry). That's fine — the whole
+# point of this project is that ONLY `install` and `config` have to be offline.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: windows-latest
+            target: win32-x64
+          - runner: windows-11-arm
+            target: win32-arm64
+          - runner: macos-13
+            target: darwin-x64
+          - runner: macos-latest
+            target: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      # Use the default repo token to lift GitHub API rate limits when the fetchers
+      # query release metadata. fetchers/github.ts reads GH_TOKEN or GITHUB_TOKEN.
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: install deps
+        run: bun install --frozen-lockfile
+
+      - name: fetch (pyright, bash, rust)
+        shell: bash
+        run: bun run cli fetch --targets ${{ matrix.target }} --only pyright,bash,rust
+
+      - name: bundle
+        shell: bash
+        run: bun run cli bundle --targets ${{ matrix.target }}
+
+      - name: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=$(ls ./bundles/opencode-lsp-bundle-${{ matrix.target }}-*.tar.gz | head -1)
+          echo "using bundle: $bundle"
+          bun run cli install --bundle "$bundle" --prefix ./tmp-prefix
+
+      - name: config
+        shell: bash
+        run: bun run cli config --prefix ./tmp-prefix --out ./tmp-prefix/opencode.jsonc
+
+      - name: verify outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f ./tmp-prefix/manifest.installed.json
+          test -f ./tmp-prefix/opencode.jsonc
+          for id in pyright bash rust; do
+            if ! grep -q "\"id\": \"$id\"" ./tmp-prefix/manifest.installed.json; then
+              echo "::error::$id missing from manifest.installed.json"
+              exit 1
+            fi
+          done
+          echo "--- manifest.installed.json"
+          cat ./tmp-prefix/manifest.installed.json
+          echo "--- opencode.jsonc"
+          cat ./tmp-prefix/opencode.jsonc
+
+      - name: smoke-launch rust-analyzer
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.target }}" == win32-* ]]; then
+            bin=./tmp-prefix/rust/rust-analyzer.exe
+          else
+            bin=./tmp-prefix/rust/rust-analyzer
+          fi
+          test -f "$bin" || { echo "::error::rust-analyzer missing at $bin"; exit 1; }
+          "$bin" --version
