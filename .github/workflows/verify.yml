@@ -1,0 +1,62 @@
+name: verify
+
+# Runs on every push and PR. Confirms:
+#   1. Our TypeScript compiles cleanly.
+#   2. src/registry.ts matches the pinned upstream opencode commit recorded in ./UPSTREAM.
+#
+# The pinned commit is the ONLY thing that should be locked in here — we intentionally
+# do NOT check against upstream HEAD on push events, because we want the push to validate
+# the state at the time the contributor snapshotted upstream, not whatever moved since.
+# Tracking upstream HEAD is the job of upstream-drift.yml (scheduled).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout opencode-airgap-lsp
+        uses: actions/checkout@v4
+
+      - name: Read pinned upstream info
+        id: upstream
+        run: |
+          set -euo pipefail
+          # Parse key=value lines from ./UPSTREAM, ignoring comments.
+          SHA=$(grep -E '^UPSTREAM_SHA=' UPSTREAM | cut -d= -f2-)
+          REPO=$(grep -E '^UPSTREAM_REPO=' UPSTREAM | cut -d= -f2- | sed 's|https://github.com/||')
+          if [[ -z "$SHA" || -z "$REPO" ]]; then
+            echo "::error::UPSTREAM file is missing UPSTREAM_SHA or UPSTREAM_REPO"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "Pinned upstream: $REPO @ $SHA"
+
+      - name: Checkout upstream opencode at pinned SHA
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.upstream.outputs.repo }}
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: upstream
+          # If upstream is a private fork, set UPSTREAM_CHECKOUT_TOKEN in repo secrets.
+          # Falls back to the default GITHUB_TOKEN (works for public repos only).
+          token: ${{ secrets.UPSTREAM_CHECKOUT_TOKEN || github.token }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Check drift against pinned upstream
+        run: bun run check-drift --opencode ./upstream

@@ -1,0 +1,224 @@
+name: upstream-drift
+
+# Weekly cron that:
+#   1. Checks out anomalyco/opencode at its current HEAD (main branch)
+#   2. Runs our drift detector
+#   3. If drift is detected, opens (or updates) a single tracking issue with the full
+#      report so we notice without having to poll manually.
+#
+# Runs Mondays 09:00 KST (00:00 UTC). Manually triggerable via workflow_dispatch.
+
+on:
+  schedule:
+    # minute hour day-of-month month day-of-week
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Override upstream ref to check (default: main)"
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      drift: ${{ steps.drift.outputs.drift }}
+      report: ${{ steps.drift.outputs.report }}
+      upstream_sha: ${{ steps.head.outputs.sha }}
+      upstream_short: ${{ steps.head.outputs.short }}
+    steps:
+      - name: Checkout opencode-airgap-lsp
+        uses: actions/checkout@v4
+
+      - name: Read UPSTREAM_REPO
+        id: upstream
+        run: |
+          set -euo pipefail
+          REPO=$(grep -E '^UPSTREAM_REPO=' UPSTREAM | cut -d= -f2- | sed 's|https://github.com/||')
+          PIN=$(grep -E '^UPSTREAM_SHA=' UPSTREAM | cut -d= -f2-)
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "pinned_sha=$PIN" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream (HEAD)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.upstream.outputs.repo }}
+          ref: ${{ inputs.ref || 'main' }}
+          path: upstream
+          token: ${{ secrets.UPSTREAM_CHECKOUT_TOKEN || github.token }}
+
+      - name: Record upstream HEAD sha
+        id: head
+        run: |
+          set -euo pipefail
+          cd upstream
+          SHA=$(git rev-parse HEAD)
+          SHORT=$(git rev-parse --short HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run drift check
+        id: drift
+        run: |
+          set +e
+          bun run check-drift --opencode ./upstream > drift-report.txt 2>&1
+          CODE=$?
+          set -e
+
+          # Always print the report to the Actions log for visibility.
+          cat drift-report.txt
+
+          if [[ $CODE -eq 0 ]]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          elif [[ $CODE -eq 1 ]]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::check-drift failed unexpectedly with exit $CODE"
+            exit $CODE
+          fi
+
+          # Stash the report for the next step (issue body). Use a delimiter heredoc
+          # so multi-line content survives GITHUB_OUTPUT encoding.
+          {
+            echo 'report<<DRIFT_EOF'
+            cat drift-report.txt
+            echo 'DRIFT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload drift report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: drift-report.txt
+          retention-days: 30
+
+  notify:
+    needs: check
+    if: needs.check.outputs.drift == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update drift issue
+        uses: actions/github-script@v7
+        env:
+          DRIFT_REPORT: ${{ needs.check.outputs.report }}
+          PINNED_SHA: ${{ needs.check.outputs.upstream_sha }}
+          PINNED_SHORT: ${{ needs.check.outputs.upstream_short }}
+        with:
+          script: |
+            const title = "⚠️ Upstream drift detected"
+            const body = [
+              "Automated drift check found differences between `src/registry.ts`",
+              `and upstream opencode at \`${process.env.PINNED_SHORT}\` (\`${process.env.PINNED_SHA}\`).`,
+              "",
+              "### Drift report",
+              "```",
+              process.env.DRIFT_REPORT || "(empty)",
+              "```",
+              "",
+              "### How to resolve",
+              "1. Pull the latest upstream locally:",
+              "   ```sh",
+              "   cd ../opencode && git fetch && git checkout main && git pull",
+              "   ```",
+              "2. Run `bun run check-drift` and address each reported item:",
+              "   - New/renamed ids → add/rename in `src/registry.ts`",
+              "   - Removed ids → delete or move to `INTENTIONALLY_SKIPPED_UPSTREAM`",
+              "   - Extension mismatches → update the `extensions` array",
+              "3. Bump `UPSTREAM_SHA` in `./UPSTREAM` to the new commit.",
+              "4. Run `bun run verify`. Open a PR.",
+              "",
+              "This issue is auto-updated by `.github/workflows/upstream-drift.yml`.",
+            ].join("\n")
+
+            // Find an existing open issue with our title (avoid duplicate spam).
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "upstream-drift",
+              per_page: 50,
+            })
+
+            const existing = open.find(i => i.title === title)
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              })
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Drift re-detected against \`${process.env.PINNED_SHORT}\` at ${new Date().toISOString()}.`,
+              })
+              core.notice(`Updated existing issue #${existing.number}`)
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["upstream-drift"],
+              })
+              core.notice(`Opened issue #${issue.number}`)
+            }
+
+  close_if_clean:
+    needs: check
+    if: needs.check.outputs.drift == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close stale drift issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "upstream-drift",
+              per_page: 50,
+            })
+            for (const issue of open) {
+              if (issue.title !== "⚠️ Upstream drift detected") continue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Drift resolved — upstream check is clean as of ${new Date().toISOString()}. Closing.`,
+              })
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: "closed",
+              })
+              core.notice(`Closed resolved drift issue #${issue.number}`)
+            }
