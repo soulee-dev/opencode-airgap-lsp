@@ -43,12 +43,10 @@ jobs:
             target: win32-x64
           - runner: windows-11-arm
             target: win32-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
           - runner: macos-latest
             target: darwin-arm64
-          # darwin-x64 is intentionally omitted: GitHub's Intel macOS runner (macos-13)
-          # is no longer available on the free / default-plan matrix
-          # ("macos-13-us-default is not supported"). Re-add a `macos-13-large` entry
-          # if a paid larger-runner plan becomes available, or test darwin-x64 locally.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     env:
