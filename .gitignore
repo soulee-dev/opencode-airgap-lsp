@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build outputs
+dist/
+*.tgz
+*.tar.gz
+*.zip
+
+# Working dirs created by fetch/bundle
+work/
+bundles/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local env
+.env
+.env.local

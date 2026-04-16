@@ -1,0 +1,27 @@
+{
+  "name": "opencode-airgap-lsp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline LSP bundle builder and installer for opencode in air-gapped environments",
+  "bin": {
+    "oalsp": "./src/cli.ts"
+  },
+  "scripts": {
+    "cli": "bun run src/cli.ts",
+    "build": "bun build ./src/cli.ts --compile --outfile dist/oalsp",
+    "build:win-x64": "bun build ./src/cli.ts --compile --target=bun-windows-x64 --outfile dist/oalsp-win-x64.exe",
+    "build:linux-x64": "bun build ./src/cli.ts --compile --target=bun-linux-x64 --outfile dist/oalsp-linux-x64",
+    "build:linux-arm64": "bun build ./src/cli.ts --compile --target=bun-linux-arm64 --outfile dist/oalsp-linux-arm64",
+    "build:darwin-x64": "bun build ./src/cli.ts --compile --target=bun-darwin-x64 --outfile dist/oalsp-darwin-x64",
+    "build:darwin-arm64": "bun build ./src/cli.ts --compile --target=bun-darwin-arm64 --outfile dist/oalsp-darwin-arm64",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
