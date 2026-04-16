@@ -1,0 +1,18 @@
+# Upstream pin
+#
+# This file records the exact opencode commit that src/registry.ts was mirrored from.
+# It's machine-readable: key=value, one per line, # for comments.
+#
+# When upstream changes, run:
+#     bun run check-drift --opencode /path/to/opencode
+#
+# If drift is reported:
+#   1. Update src/registry.ts to match
+#   2. Bump UPSTREAM_SHA below to the new commit
+#   3. Re-run check-drift to confirm clean
+
+UPSTREAM_REPO=https://github.com/anomalyco/opencode
+UPSTREAM_SHA=7341718f9234b0cf3a8758c87e91d2006b71bff6
+UPSTREAM_SERVER_TS=packages/opencode/src/lsp/server.ts
+UPSTREAM_CONFIG_TS=packages/opencode/src/config/config.ts
+PINNED_AT=2026-04-16

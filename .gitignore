@@ -21,3 +21,7 @@ bundles/
 # Local env
 .env
 .env.local
+
+# Windows shell redirect artifact (when a cmd `2>nul` runs under Git Bash, it
+# creates a literal file named `nul` instead of hitting the null device).
+/nul

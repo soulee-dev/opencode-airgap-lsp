@@ -952,6 +952,24 @@ export const REGISTRY: LspEntry[] = [
   }
 }
 
+/**
+ * LSP ids defined in opencode's server.ts that we intentionally do NOT mirror.
+ *
+ * Used by `scripts/check-drift.ts` to suppress false-positive "missing upstream" errors.
+ *
+ * When adding an entry here, leave a comment explaining WHY — future maintainers need
+ * to know whether the exclusion still applies after upstream changes.
+ */
+export const INTENTIONALLY_SKIPPED_UPSTREAM: ReadonlyArray<{ id: string; reason: string }> = [
+  {
+    id: "ty",
+    reason:
+      "Experimental Python LSP, enabled only when OPENCODE_EXPERIMENTAL_LSP_TY=true. " +
+      "At runtime it replaces pyright (see opencode lsp.ts:118-128 filterExperimentalServers). " +
+      "Users who want ty can install it manually into their venv.",
+  },
+]
+
 export function entryById(id: string): LspEntry | undefined {
   return REGISTRY.find((e) => e.id === id)
 }
